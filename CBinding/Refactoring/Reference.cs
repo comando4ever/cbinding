@@ -46,16 +46,22 @@ namespace CBinding.Refactoring
 				&& Length.Equals (other.Length);
 		}
 
+		public override int GetHashCode()
+		{
+			//assuming offset and length tend to be small relative to maxint
+			return Begin.FileName.GetHashCode () ^ Length ^ (Offset << 16);
+		}
+
 		#region IComparable implementation
 
 		public int CompareTo (object obj)
 		{	
-			Reference other = (Reference)obj;
-			return FileName.Equals (other.FileName) ?
-				Offset.CompareTo (other.Offset) 
-					:
-				FileName.CompareTo (other.FileName);
-			}
+			var other = (Reference)obj;
+			var cmp = string.CompareOrdinal (FileName, other.FileName);
+			if (cmp == 0)
+				return Offset.CompareTo (other.Offset);
+			return cmp;
+		}
 
 		#endregion
 	}

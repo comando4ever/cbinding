@@ -24,19 +24,18 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System.Collections.Generic;
-using MonoDevelop.Ide.TypeSystem;
-using ClangSharp;
-using MonoDevelop.Ide.Gui;
-using MonoDevelop.Ide.Editor;
-using System.Threading;
 using System;
+using System.Collections.Generic;
+using System.Threading;
+using ClangSharp;
+using MonoDevelop.Ide.Editor;
+using MonoDevelop.Ide.TypeSystem;
 
 namespace CBinding.Parser
 {
 	
 	public class CParsedDocument : DefaultParsedDocument {
-		public CXTranslationUnit TU { get; set;}
+		public CXTranslationUnit TU;
 		public CLangManager Manager { get; private set;}
 		public CProject Project { get; set;}
 		List<CXUnsavedFile> unsavedFiles;
@@ -51,14 +50,8 @@ namespace CBinding.Parser
 		public CParsedDocument(CProject proj, string fileName) : base(fileName)
 		{
 			Initialize (proj);
-			foreach (Document openDocument in MonoDevelop.Ide.IdeApp.Workbench.Documents) {
-				if (openDocument.IsDirty) {
-					CXUnsavedFile unsavedFile = new CXUnsavedFile ();
-					unsavedFile.Initialize (openDocument.FileName, openDocument.Editor.Text, Project.IsBomPresentInFile (openDocument.FileName));
-					unsavedFiles.Add (unsavedFile);
-				}
-			}
-			TU = Manager.CreateTranslationUnit(proj, fileName, unsavedFiles.ToArray ());
+			unsavedFiles = Project.UnsavedFiles.Get ();
+			TU = Manager.CreateTranslationUnit(fileName, unsavedFiles.ToArray ());
 		}
 
 		/// <summary>
@@ -66,16 +59,11 @@ namespace CBinding.Parser
 		/// Updates Symbol Database
 		/// Places error markers on document
 		/// </summary>
-		public void ParseAndDiagnose (CancellationToken cancellationToken = default(CancellationToken))
+		public void ParseAndDiagnose (CancellationToken cancellationToken)
 		{
 			lock (Manager.SyncRoot) {
 				var unsavedFilesArray = unsavedFiles.ToArray ();
-				clang.reparseTranslationUnit (
-					TU,
-					(uint) (unsavedFilesArray.Length),
-					unsavedFilesArray,
-					clang.defaultReparseOptions (TU)
-				);
+				TU = Manager.Reparse (FileName, unsavedFilesArray, cancellationToken);
 				uint numDiag = clang.getNumDiagnostics (TU);
 				for (uint i = 0; i < numDiag; i++) {
 					CXDiagnostic diag = clang.getDiagnostic (TU, i);
@@ -104,9 +92,8 @@ namespace CBinding.Parser
 					}
 					clang.disposeDiagnostic (diag);
 				}
-				Manager.UpdateDatabase (Project, FileName, TU, cancellationToken);
+				Manager.UpdateDatabase (FileName, TU, cancellationToken, true);
 			}
 		}
 	}
-	
 }

@@ -10,7 +10,7 @@
 		<Category>other/misc/c</Category>
 		<Icon>md-project-library</Icon>
 		<Image id="md-library-project" />
-		<LanguageName>CPP</LanguageName>
+		<LanguageName>C++</LanguageName>
 		<_Description>Creates simple shared library C++ project.</_Description>
 		<DefaultFilename>SharedLibraryCppProject</DefaultFilename>
 		<GroupId>md-shared-library-project</GroupId>
@@ -37,6 +37,11 @@
 
 // Add function definitions here
 ]]></File>
+				<File name = "CMakeLists.txt"><![CDATA[cmake_minimum_required (VERSION 3.0)
+project (${ProjectName} CXX)
+
+add_library (${ProjectName} SHARED main.cpp)
+include_directories ("${PROJECT_SOURCE_DIR}")]]></File>
 			</Files>
 		</Project>
 	</Combine>

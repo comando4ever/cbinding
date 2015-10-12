@@ -30,21 +30,18 @@
 //
 
 using System;
-using System.IO;
-using System.Xml;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Xml;
 using Mono.Addins;
 using MonoDevelop.Core;
 using MonoDevelop.Core.Execution;
-using MonoDevelop.Projects;
 using MonoDevelop.Core.Serialization;
 using MonoDevelop.Ide;
-using System.Threading.Tasks;
-using System.Threading;
-using CBinding.Parser;
-using ClangSharp;
-using MonoDevelop.Ide.TypeSystem;
+using MonoDevelop.Projects;
 
 namespace CBinding
 {
@@ -74,9 +71,13 @@ namespace CBinding
 		[ItemProperty ("OutputType", DefaultValue = CompileTarget.Exe)]
 		public CompileTarget target { get; set; }
 
+		public bool HasLibClang { get; private set; }
+
 		public CLangManager ClangManager { get; private set; }
 
-		public ClangProjectSymbolDatabase DB { get; private set; }
+		public SymbolDatabaseMediator DB { get; private set; }
+
+		public UnsavedFilesManager UnsavedFiles { get; private set; }
 
 		ProjectPackageCollection packages = new ProjectPackageCollection ();
 		
@@ -93,22 +94,6 @@ namespace CBinding
 		/// </summary>
 		public static string[] HeaderExtensions = { ".H", ".HH", ".HPP", ".HXX" };
 
-
-		Dictionary<string, bool> bomPresentInFile = new Dictionary<string, bool> ();
-
-		public bool IsBomPresentInFile (string filename)
-		{
-			return bomPresentInFile [filename];
-		}
-
-		public void BomPresentInFile (string filename, bool value)
-		{
-			if (bomPresentInFile.ContainsKey (filename))
-				bomPresentInFile [filename] = value;
-			else 
-				bomPresentInFile.Add (filename, value);
-		}
-
 		/// <summary>
 		/// Initialize this instance.
 		/// </summary>
@@ -116,8 +101,15 @@ namespace CBinding
 		{
 			base.OnInitialize ();
 			packages.Project = this;
-			ClangManager = new CLangManager (this);
-			DB = new ClangProjectSymbolDatabase (this);
+			try {
+				ClangManager = new CLangManager (this);
+				DB = new SymbolDatabaseMediator (this, ClangManager);
+				UnsavedFiles = new UnsavedFilesManager (this);
+				HasLibClang = true;
+			} catch (DllNotFoundException ex) {
+				LoggingService.LogError ("Could not load libclang", ex);
+				HasLibClang = false;
+			}
 		}
 
 		/// <summary>
@@ -159,13 +151,13 @@ namespace CBinding
 						case "C":
 							this.Language = Language.C;
 							break;
-						case "CPP":
+						case "C++":
 							this.Language = Language.CPP;
 							break;
-						case "Objective C":
+						case "Objective-C":
 							this.Language = Language.OBJC;
 							break;
-						case "Objective C++":
+						case "Objective-C++":
 							this.Language = Language.OBJCPP;
 							break;
 						}
@@ -206,7 +198,7 @@ namespace CBinding
 		/// </summary>
 		protected override string[] OnGetSupportedLanguages ()
 		{
-			return new string[] { "C", "CPP", "Objective C", "Objective C++" };
+			return new string[] { "C", "C++", "Objective-C", "Objective-C++" };
 		}
 
 		/// <summary>
@@ -225,7 +217,7 @@ namespace CBinding
 		protected override bool OnGetIsCompileable (string fileName)
 		{
 			string ext = Path.GetExtension (fileName.ToUpper ());
-			return (-1 != Array.IndexOf (SourceExtensions, ext));
+			return (-1 != Array.IndexOf (SourceExtensions, ext) || -1 != Array.IndexOf (HeaderExtensions, ext) );
 		}
 
 		/// <summary>
@@ -519,79 +511,6 @@ namespace CBinding
 			set {
 				packages = value;
 				packages.Project = this;
-			}
-		}
-
-		/// <summary>
-		/// This methods checks if a file has a Byte Order Marker, and sets it accordingly in the project model.
-		/// This is needed to fix cursor misalignations.
-		/// </summary>
-		/// <param name="fileName"></param>
-		public void CheckForBom (string fileName)
-		{
-			using (var s = new FileStream (fileName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
-				var BOM = new byte[3];
-				s.Read (BOM, 0, 3);
-				bool bomPresent = (BOM [0] == 0xEF && BOM [1] == 0xBB && BOM [2] == 0xBF);
-				BomPresentInFile (fileName, bomPresent);
-			}
-		}
-
-		/// <summary>
-		/// Invoked when a file is added to project. Detects UTF-8 BOM.
-		/// </summary>
-		/// <param name="args">Arguments.</param>
-		protected override void OnFileAddedToProject (ProjectFileEventArgs args)
-		{
-			base.OnFileAddedToProject (args);
-			foreach (var e in args) {
-
-				CheckForBom (e.ProjectFile.Name);
-
-				if (!Loading && !IsCompileable (e.ProjectFile.Name) &&
-					e.ProjectFile.BuildAction == BuildAction.Compile) {
-					e.ProjectFile.BuildAction = BuildAction.None;
-				}
-
-				if (!Loading && e.ProjectFile.BuildAction == BuildAction.Compile)
-					TypeSystemService.ParseFile (this, e.ProjectFile.Name);
-			}
-		}
-
-		/// <summary>
-		/// Invoked when a file is changed to project. Detects UTF-8 BOM.
-		/// </summary>
-		/// <param name="e">E.</param>
-		protected override void OnFileChangedInProject (ProjectFileEventArgs args)
-		{
-			base.OnFileChangedInProject (args);
-			foreach (var e in args) {
-
-				CheckForBom (e.ProjectFile.Name);
-
-				if (!Loading && !IsCompileable (e.ProjectFile.Name) &&
-					e.ProjectFile.BuildAction == BuildAction.Compile) {
-					e.ProjectFile.BuildAction = BuildAction.None;
-				}
-			
-			}
-
-		}
-
-		/// <summary>
-		/// Invoked when a file is removed from project.
-		/// </summary>
-		/// <param name="args">Arguments.</param>
-		protected override void OnFileRemovedFromProject (ProjectFileEventArgs args)
-		{
-			base.OnFileRemovedFromProject (args);
-			foreach (ProjectFileEventInfo e in args) {
-				if (!Loading && !IsCompileable (e.ProjectFile.Name) &&
-					e.ProjectFile.BuildAction == BuildAction.Compile) {
-					e.ProjectFile.BuildAction = BuildAction.None;
-				}
-				if (e.ProjectFile.BuildAction == BuildAction.Compile)
-					ClangManager.RemoveTranslationUnit (this, e.ProjectFile.Name);
 			}
 		}
 

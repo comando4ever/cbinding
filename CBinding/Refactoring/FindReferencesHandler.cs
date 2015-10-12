@@ -6,6 +6,7 @@ using ClangSharp;
 using System.Collections.Generic;
 using MonoDevelop.Ide.FindInFiles;
 using MonoDevelop.Ide.Gui;
+using CBinding.Parser;
 
 namespace CBinding.Refactoring
 {	
@@ -18,6 +19,7 @@ namespace CBinding.Refactoring
 		CProject project;
 		CXCursor cursorReferenced;
 		string UsrReferenced;
+		public string File;
 
 		/// <summary>
 		/// Initializes a new instance of the <see cref="CBinding.Refactoring.FindReferencesHandler"/> class.
@@ -25,8 +27,12 @@ namespace CBinding.Refactoring
 		/// </summary>
 		/// <param name="proj">Proj.</param>
 		/// <param name="doc">Document.</param>
-		public FindReferencesHandler (CProject proj, Document doc) {
+		public FindReferencesHandler (CProject proj, Document doc)
+		{
 			project = proj;
+			if (!proj.HasLibClang)
+				return;
+			
 			cursorReferenced = project.ClangManager.GetCursorReferenced(
 				project.ClangManager.GetCursor (
 					doc.FileName,
@@ -44,24 +50,26 @@ namespace CBinding.Refactoring
 		/// <param name="cursor">Cursor.</param>
 		/// <param name="parent">Parent.</param>
 		/// <param name="data">Data.</param>
-		public CXChildVisitResult Visit(CXCursor cursor, CXCursor parent, IntPtr data){
+		public CXChildVisitResult Visit(CXCursor cursor, CXCursor parent, IntPtr data)
+		{
+			if (!File.Equals (TranslationUnitParser.GetFileName (cursor)))
+				return CXChildVisitResult.Continue;
+			
 			CXCursor referenced = project.ClangManager.GetCursorReferenced (cursor);
 			string Usr = project.ClangManager.GetCursorUsrString (referenced);
 
 			if (UsrReferenced.Equals (Usr)) {
 				CXSourceRange range = clang.Cursor_getSpellingNameRange (cursor, 0, 0);
-				Reference reference = new Reference (project, cursor, range);
-				var file = project.Files.GetFile (reference.FileName);
+				var reference = new Reference (project, cursor, range);
 
-				if (file != null) {
-					Document doc = IdeApp.Workbench.OpenDocument (reference.FileName, project, false);
-					if (!references.Contains (reference)
-						//this check is needed because explicit namespace qualifiers, eg: "std" from std::toupper
-						//are also found when finding eg:toupper references, but has the same cursorkind as eg:"toupper"
-						&& doc.Editor.GetTextAt (reference.Begin.Offset, reference.Length).Equals (cursor.ToString ())){
-						references.Add (reference);
-					}			
-				}
+				Document doc = IdeApp.Workbench.OpenDocument (reference.FileName, project, false);
+				if (!references.Contains (reference)
+					//this check is needed because explicit namespace qualifiers, eg: "std" from std::toupper
+					//are also found when finding eg:toupper references, but has the same cursorkind as eg:"toupper"
+					&& doc.Editor.GetTextAt (reference.Begin.Offset, reference.Length).Equals (referenced.ToString ())){
+					references.Add (reference);
+				}			
+
 			}
 			return CXChildVisitResult.Recurse;
 		}
@@ -70,12 +78,12 @@ namespace CBinding.Refactoring
 		/// Finds the references and reports them to the IDE.
 		/// </summary>
 		/// <param name="project">Project.</param>
-		/// <param name="cursor">Cursor.</param>
-		public void FindRefs (CProject project, CXCursor cursor)
+		public void FindRefs (CProject project)
 		{
 			var monitor = IdeApp.Workbench.ProgressMonitors.GetSearchProgressMonitor (true, true);
-			try {
-				project.ClangManager.FindReferences(this);
+			try {			
+				lock(project.ClangManager.SyncRoot)
+					project.ClangManager.FindReferences(this);
 				foreach (var reference in references) {
 					var sr = new SearchResult (
 						new FileProvider (reference.FileName),
@@ -101,10 +109,10 @@ namespace CBinding.Refactoring
 		/// <param name="info">Info.</param>
 		public void Update (CommandInfo info)
 		{
-			if (clang.Cursor_isNull (cursorReferenced) == 0) {
-				info.Enabled = info.Visible = IsReferenceOrDeclaration (cursorReferenced);
-				info.Bypass = !info.Visible;
-			}
+			info.Enabled = info.Visible =
+				project.HasLibClang &&
+				clang.Cursor_isNull (cursorReferenced) == 0 &&
+				IsReferenceOrDeclaration (cursorReferenced);
 		}
 
 		/// <summary>
@@ -112,7 +120,7 @@ namespace CBinding.Refactoring
 		/// </summary>
 		public void Run ()
 		{
-			FindRefs (project, cursorReferenced);
+			FindRefs (project);
 		}
 
 		/// <summary>
